@@ -1,0 +1,871 @@
+---
+title: "Biodiversità"
+date: June 27, 2022
+author: "Francesco Bombassei De Bona"
+csl: acm.csl
+output:
+ ioslides_presentation:
+    css: style.css
+    df_print: kable
+    widescreen: true
+bibliography: biblio.bib
+---
+
+```{r Libraries, message=FALSE, warning=FALSE, include=FALSE, suppressWarnings = TRUE, suppressPackageStartupMessages = TRUE}
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+library(ggraph)
+library(tidygraph)
+library(igraph)
+library(stringr)
+library(corrplot)
+library(gganimate)
+library(graphlayouts)
+library(plotly)
+library(RColorBrewer)
+options(dplyr.summarise.inform = FALSE)
+```
+
+# Dataset
+
+## Dati sulla biodiversità
+
+I dati sulla biodiversità mondiale sono stati ottenuti dalla rete GBIF attraverso il download dall'apposito portale [@dataset].
+
+Il Global Biodiversity Information Facility è una rete internazionale e un'infrastruttura dati fondata dai governi mondiali che si pone l'obbiettivo di fornire libero accesso ai dati riguardanti tutti i tipi di vita sulla Terra [@gbif.org2022].
+
+### Lettura del file
+
+Il file contenete il dataset è un file .csv dove il separatore è il carattere speciale di tabulazione `\t`.
+
+La lettura del file è stata operata utilizzando l'apposita funzione `read_csv()`, specificando gli oportuni parametri.
+
+```{r Read GBIF, include=FALSE}
+if (!exists("gbif"))
+  gbif <- read.csv("data/gbif.csv", sep = "\t")
+```
+
+### Struttura del dataset
+
+Il dataset è composto dalle seguenti colonne:
+
+-   `taxonKey`: chiave primaria del DB di provenienza del dato;
+
+-   `scientificName`: nome scentifico del dato;
+
+-   `acceptedTaxonKey`: chiave primaria del DB GBIF;
+
+-   `acceptedScientificName`: nome scentifico all'interno del DB GBIF;
+
+-   `numberOfOccurrences`: occorrenze del dato;
+
+-   `taxonRank`: tipologia di dato tassonomico;
+
+-   `taxonomicStatus`: indica se il dato è stato accettato o meno oppure se si tratta di un sinonimo;
+
+-   taxa tassonomici: colonne che indicano regno, phylum, classe, ordine, genus e specie. Ogni colonna ha associata una colonna che contiene la chiave esterna verso l'attributo `acceptedTaxonKey` della relativa entry nella base di dati;
+
+-   `iucnRedListCategory`: nel caso delle singole specie contiene il rischio di estinzione.
+
+### Esempio
+
+```{r Dataset example, echo=FALSE}
+gbif %>%
+  head(10) %>%
+  kable() %>%
+  kable_minimal(c("striped", "hover", "condensed", "responsive"), font_size = 17) %>%
+  scroll_box(width = "100%")
+```
+
+## Dati sulle interazioni
+
+I dati sulle interazioni sono stati ottenuti da GloBI scaricando l'apposito file .csv.
+
+GloBI [@poelen2014] è un'infrasturttura che si pone come obbiettivo la raccolta dei dati da vari dataset pubblicati dagli studiosi per definire tutte le interazioni tra le specie che compongono la biosfera terrestre.
+
+### Lettura del file
+
+Il file contenete il dataset, come detto in precedenza, è un file .csv ordinario.
+
+Il peso del file, 25.82GB, ha comportato la necessità di utilizzare un server esterno per l'elaborazione iniziale del dataset: utilizzando la piattaforma AWS è stata predisposta un'istanza EC2 con 16vCPU, 64GB di memoria RAM e un SSD da 60GB. Sull'istanza EC2 è stato installata l'ultima versione di Ubuntu, R, RStudio Server e tutte le dipendenze necessarie.
+
+Aprendo poi la porta 80 e configurando le credenziali d'accesso è stata utilizzata l'interfaccia web di RStudio Server per effettuare la prima lavorazione del dataset.
+
+### Dataset derivato
+
+```{r Read Interactions, include=FALSE}
+if (!exists("interactions")){
+  interactions <- read.csv("data/interactions_red.csv")
+  
+  ambiguous <- tibble(
+    phylum = union(
+      interactions %>%
+        filter(sourceTaxonKingdomName == "") %>%
+        distinct(sourceTaxonPhylumName) %>%
+        pull(sourceTaxonPhylumName),
+      interactions %>%
+      filter(targetTaxonKingdomName == "" | is.na(targetTaxonKingdomName)) %>%
+      distinct(targetTaxonPhylumName) %>%
+      pull(targetTaxonPhylumName)
+    )
+  )
+  
+  bacteria <- c("Spirochaetes", "Chlamydiae", "Tenericutes")
+  plants <- c("Magnoliophyta", "Spermatophyta", "Chlorophyta")
+  
+  ambiguous <- ambiguous %>%
+    left_join(
+      gbif %>% select(kingdom, phylum) %>% distinct(kingdom, phylum),
+      by = "phylum"
+    ) %>%
+    mutate(
+      kingdom = ifelse(
+        is.na(kingdom) & (phylum %in% bacteria | str_detect(tolower(phylum), "bacte") | str_detect(tolower(phylum), "coccu")), "Bacteria", kingdom),
+      kingdom = ifelse(is.na(kingdom) & phylum %in% plants, "Plantae", kingdom),
+      kingdom = ifelse(is.na(kingdom) & str_detect(tolower(phylum), "archae"), "Archaea", kingdom),
+      kingdom = ifelse(is.na(kingdom) & (str_detect(tolower(phylum), "phyta") | phylum == "Apicomplexa"), "Chromista", kingdom)
+    )
+  
+  interactions <- interactions %>%
+    left_join(ambiguous, by = c("sourceTaxonPhylumName" = "phylum")) %>%
+    mutate(
+      sourceTaxonKingdomName = ifelse(sourceTaxonKingdomName == "", NA, sourceTaxonKingdomName),
+      sourceTaxonKingdomName = coalesce(sourceTaxonKingdomName, kingdom)
+    ) %>%
+    select(-kingdom) %>%
+    left_join(ambiguous, by = c("targetTaxonPhylumName" = "phylum")) %>%
+    mutate(
+      targetTaxonKingdomName = ifelse(targetTaxonKingdomName == "", NA, targetTaxonKingdomName),
+      targetTaxonKingdomName = coalesce(targetTaxonKingdomName, kingdom)
+    ) %>%
+    select(-kingdom) %>%
+    mutate(
+      targetTaxonKingdomName = ifelse(targetTaxonPhylumName == "Animalia", "Animalia", targetTaxonKingdomName),
+      targetTaxonPhylumName = ifelse(targetTaxonPhylumName == "Animalia", "Chordata", targetTaxonPhylumName)
+    ) %>%
+    filter(!is.na(sourceTaxonKingdomName) & !is.na(targetTaxonKingdomName))
+}
+
+```
+
+Dal dataset iniziale contenente 13,997,237 osservazioni strutturate in 92 variabili è stato ottenuto un dataset derivato dal peso di `` `r round(file.info("data/interactions_red.csv")$size / 2^20, 2)` `` MB, con `` `r format(nrow(interactions), big.mark = ",")` `` osservazioni costituite da `` `r ncol(interactions)` `` variabili.
+
+### Struttura del dataset
+
+Il dataset è composto dalle seguenti colonne:
+
+-   taxa tassonomici della sorgente dell'interazione: colonne che indicano regno, phylum, classe, ordine, genus e specie;
+
+-   taxa tassonomici del destinatario dell'interazione: colonne che indicano regno, phylum, classe, ordine, genus e specie;
+
+-   `interactionTypeName`: contiene il tipo d'interazione.
+
+### Esempio
+
+```{r Interactions example, echo=FALSE}
+interactions %>%
+  head(10) %>%
+  kable() %>%
+  kable_minimal(c("striped", "hover", "condensed", "responsive"), font_size = 17) %>%
+  scroll_box(width = "100%")
+```
+
+## Dataset sulle formiche
+
+I dati sulla colonia di formiche sono state ottenute da una ricerca [@mersch2013a].
+
+### Lettura dei file
+
+I dati sulla colonia sono divisi su più file di testo, ognuno contenente la matrice di adiacenza relativa alle interazioni di un determinato giorno.
+
+Inoltre, è presente un file .csv contenente i dati relativi ai singoli individui.
+
+Per la lettura dei file di testo si è predisposta un'apposita funzione, mentre per il file .csv è stata utilizzata la funzione di base.
+
+### Struttura dei dataset
+
+Sono stati prodotti due dataframe contenenti rispettivamente i dati sui nodi e i dati sugli archi del grafo delle interazioni all'interno della colonia.
+
+# Biodiversità
+
+```{r Interactions, eval=FALSE, include=FALSE}
+interactions <- fread("interactions.csv")
+interactions_reduced <- interactions %>% 
+  select(
+    sourceTaxonGenusName, sourceTaxonFamilyName, sourceTaxonOrderName, sourceTaxonClassName, sourceTaxonPhylumName, sourceTaxonKingdomName,
+    targetTaxonGenusName, targetTaxonFamilyName, targetTaxonOrderName, targetTaxonClassName, targetTaxonPhylumName, targetTaxonKingdomName,
+    interactionTypeName
+    ) %>%
+  filter(
+    !across(starts_with("source"), ~ . == ""),
+    !across(starts_with("target"), ~ . == ""),
+    sourceTaxonGenusName != "",
+    targetTaxonGenusName != "",
+    sourceTaxonGenusName != "" & sourceTaxonFamilyName != "",
+    targetTaxonGenusName != "" & targetTaxonFamilyName != "",
+    sourceTaxonGenusName != "" & sourceTaxonFamilyName != "" & sourceTaxonOrderName != "",
+    targetTaxonGenusName != "" & targetTaxonFamilyName != "" & targetTaxonOrderName != "",
+    sourceTaxonGenusName != "" & sourceTaxonFamilyName != "" & sourceTaxonOrderName != "" & sourceTaxonClassName != "",
+    targetTaxonGenusName != "" & targetTaxonFamilyName != "" & targetTaxonOrderName != "" & targetTaxonClassName != "",
+    sourceTaxonGenusName != "" & sourceTaxonFamilyName != "" & sourceTaxonOrderName != "" & sourceTaxonClassName != "" & sourceTaxonPhylumName != "",
+    targetTaxonGenusName != "" & targetTaxonFamilyName != "" & targetTaxonOrderName != "" & targetTaxonClassName != "" & targetTaxonPhylumName != ""
+  ) %>%
+  mutate(across(everything(), ~str_to_title(str_replace_all(., "[^A-Za-z]+", ""))))
+
+fwrite(interactions_reduced, "interactions_red.csv")
+```
+
+## Cos'é la biodiversità?
+
+Diversità biologica [@conventi1993]
+
+:   Variabilità degli organismi viventi di ogni origine, compresi inter alia gli ecosistemi terrestri, marini ed altri ecosistemi acquatici, ed i complessi ecologici di cui fanno parte; ciò include la diversità nell'ambito delle specie, e tra le specie degli ecosistemi.
+
+## Perché la biodiversità è importante?
+
+La biodiversità è importante per tutti i processi che supportano la vita sulla Terra. Se osserviamo l'ecosistema che ci circonda possiamo vedere come tutto ciò che avviene in esso è basato sull'interazione tra specie biologiche diverse tra di loro che svolgono funzioni diverse e complementari.
+
+La perdita della diversità biologica costituisce un pericolo per la vita di tutti gli organismi sul nostro pianeta, noi inclusi. Per questo motivio è importante che ognuno di noi sia conoscio di quanto ogni creatura che ci circonda svolga un ruolo fondamentale per la nostra vita [@theroyalsociety2022].
+
+## Regni tassonomici
+
+```{r Kingdoms dataframe, echo=FALSE}
+kingdoms <- gbif %>%
+  filter(taxonRank == "SPECIES", taxonomicStatus == "ACCEPTED") %>%
+  count(kingdom) %>%
+  filter(
+    !str_detect(kingdom, "incertae"),
+    kingdom != "Viruses",
+    kingdom != "Bacteria",
+    kingdom != "Archaea"
+  ) %>%
+  mutate(p = 100 * n / sum(n))
+```
+
+La tassonomia moderna identifica, al livello più alto della classificazione, 8 regni di entità biologiche: Animalia, Archaea, Bacteria, Chromista, Fungi, Plantae, Protozoa e Virus.
+
+Per una questione di sotto-campionamento rispetto alle osservazioni degli scienziati [@louca2019; @microbio2011] vengono esculsi dall'analisi i regni Archaea, Bacteria e Virus.
+
+Attualmente sono classificate `` `r format(sum(kingdoms$n), big.mark = ",")` `` specie diverse divise in 5 regni. Com'è possibile vedere dalla figura Fig. 1, il regno Animalia è il più classificato rispetto agli altri con più del doppio delle specie del regno Plantae.
+
+```{r Kingdoms plot, echo=FALSE, out.height = "100%", out.width = "100%"}
+ggplot(kingdoms) +
+   geom_col(
+    aes(
+      x = reorder(kingdom, n),
+      y = p,
+      fill = kingdom
+    ),
+    position = "dodge2",
+    alpha = .9
+  ) +
+  geom_text(
+    aes(label = format(n, big.mark = ","), x = kingdom, y = p + 0.5),
+    position = position_dodge(0.9),
+    vjust = 0
+  ) +
+  scale_y_continuous(breaks = seq(0, (max(kingdoms$p) + 2.5), by = 2.5)) +
+  xlab("Regno") +
+  ylab("Numero di specie (in %)") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  labs(title = "Numero di specie per regno tassonomico", caption = "Fig. 1")
+```
+
+## Piante e animali
+
+Come visto in precedenza piante e animali rappresentano i due regni più classificati in tassonomia. Di seguito vengono presentati due mappe ad albero che rappresentano uno spaccato sui due regni citati in precedenza.
+
+Le mappe ad albero si strutturano a livello macroscopico dal regno e vanno in profondità fino alla famiglia. Poteva essere utilizzata una granularità più fine, fino alla specie, ma la complessità dell'output non avrebbe reso navigabile le mappe per via dell'alto numero di elementi.
+
+## Piante
+
+```{r Plantae, echo=FALSE, out.height = "100%", out.width = "100%"}
+plantae <- gbif %>%
+  filter(taxonRank == "SPECIES", taxonomicStatus == "ACCEPTED", kingdom == "Plantae") %>%
+  select(phylum, class, order, family, genus) %>%
+  filter(if_all(everything(), ~. != ""))
+```
+
+```{r Plantae plot, echo=FALSE, out.height = "100%", out.width = "100%", warning=FALSE}
+labels = c(
+  plantae %>% distinct(phylum) %>% arrange(phylum) %>% pull(),
+  plantae %>% distinct(phylum, class) %>% arrange(class) %>% pull(),
+  plantae %>% distinct(phylum, class, order) %>% arrange(order) %>% pull(),
+  plantae %>% distinct(phylum, class, order, family) %>% arrange(family) %>% pull()
+)
+
+parents = c(
+  rep("Plantae", length(plantae %>% distinct(phylum) %>% pull())),
+  plantae %>% distinct(phylum, class, .keep_all = TRUE) %>% arrange(class) %>% pull(phylum),
+  plantae %>% distinct(phylum, class, order, .keep_all = TRUE) %>% arrange(order) %>% pull(class),
+  plantae %>% distinct(phylum, class, order, family, .keep_all = TRUE) %>% arrange(family) %>% pull(order)
+)
+
+values = c(
+  plantae %>% group_by(phylum) %>% count() %>% arrange(phylum) %>% pull(n),
+  plantae %>% group_by(phylum, class) %>% count() %>% arrange(class) %>% pull(n),
+  plantae %>% group_by(phylum, class, order) %>% count() %>% arrange(order) %>% pull(n),
+  plantae %>% group_by(phylum, class, order, family) %>% count() %>% arrange(family, desc(order)) %>% pull(n)
+)
+
+plot_ly(
+  type = 'treemap',
+  labels = labels,
+  parents = parents,
+  values = values,
+  branchvalues = "total",
+  maxdepth = 2,
+  tiling = list(squarifyratio = 2),
+  hoverinfo = "label+value+percent parent",
+  hoverlabel = list(align="left")
+)
+```
+
+-   92% degli organismi vegetali fanno parte del phylum Tracheophyta (dotati di tessuto vascolare e organi);
+
+-   Altri phylum costituiti da organismi vegetali più semplici come alghe e muschi.
+
+Risulta rilevante notare come il numero di specie del phylum Tracheophyta sia largamente maggiore rispetto al numero di specie degli altri phylum nonostante questi ultimi abbiano il vantaggio di essere organismi più semplici. Questo può essere ricondotto al fatto che gli organismi del phylum Tracheophyta:
+
+-   possano svilupparsi non solo in larghezza ma anche in altezza, per via della vascolarizzazione;
+
+-   abbiano un vantaggio riproduttivo dovuto alla presenza di organi riproduttivi che consentono una riproduzione sessuata che migliora la variabilità genetica degli individui.
+
+## Animali
+
+```{r Animalia, echo=FALSE, out.height = "100%", out.width = "100%"}
+ambiguous <- c("Acanthocephala", "Ctenophora", "Diplura", "Polychaeta", "Plecoptera", "Pygophora", "Parachela", "Brachypoda")
+animalia <- gbif %>%
+  filter(taxonRank == "SPECIES", taxonomicStatus == "ACCEPTED", kingdom == "Animalia") %>%
+  select(phylum, class, order, family, genus) %>%
+  filter(if_all(everything(), ~. != "")) %>%
+  mutate(
+    class = ifelse(class == phylum, paste0(class, " (class)"), class),
+    order = ifelse(order == class | order == phylum, paste0(order, " (order)"), order),
+    family = ifelse(family == order | family == class | family == phylum, paste0(family, " (family)"), family),
+    genus = ifelse(genus %in% ambiguous | genus == family | genus == order | genus == class | genus == phylum, paste0(genus, " (genus)"), genus),
+  )
+```
+
+```{r Animalia plot, echo=FALSE, out.height = "100%", out.width = "100%"}
+labels = c(
+  animalia %>% distinct(phylum) %>% arrange(phylum) %>% pull(),
+  animalia %>% distinct(phylum, class) %>% arrange(class) %>% pull(),
+  animalia %>% distinct(phylum, class, order) %>% arrange(order) %>% pull(),
+  animalia %>% distinct(phylum, class, order, family) %>% arrange(family) %>% pull()
+)
+
+parents = c(
+  rep("Animalia", length(animalia %>% distinct(phylum) %>% pull())),
+  animalia %>% distinct(phylum, class, .keep_all = TRUE) %>% arrange(class) %>% pull(phylum),
+  animalia %>% distinct(phylum, class, order, .keep_all = TRUE) %>% arrange(order) %>% pull(class),
+  animalia %>% distinct(phylum, class, order, family, .keep_all = TRUE) %>% arrange(family) %>% pull(order)
+)
+
+values = c(
+  animalia %>% group_by(phylum) %>% count() %>% arrange(phylum) %>% pull(n),
+  animalia %>% group_by(phylum, class) %>% count() %>% arrange(class) %>% pull(n),
+  animalia %>% group_by(phylum, class, order) %>% count() %>% arrange(order) %>% pull(n),
+  animalia %>% group_by(phylum, class, order, family) %>% count() %>% arrange(family, desc(order)) %>% pull(n)
+)
+
+plot_ly(
+  type = 'treemap',
+  labels = labels,
+  parents = parents,
+  values = values,
+  branchvalues = "total",
+  maxdepth = 2,
+  textinfo = "label+value+percent parent",
+  tiling = list(squarifyratio = 2)
+)
+```
+
+In questo caso è interessante notare come sia maggiore il numero di specie del phylum Arthropoda rispetto al numero di specie del phylum Chordata, infatti, gli organismi del phylum Arhtropoda sono organismi nettmanete più semplici.
+
+Vedendo poi la divisione del phylum Arthropoda, si nota che questo è composto per il 82% da specie della classe Insecta, che si ritiene essere una delle più antiche forme di vita terreste, il che può essere motivo del numero elevato di specie.
+
+Nonostante vi siano un numero elevato di specie registrate, gli insetti sono una delle classi maggiormente minacciate dall'attività umana e ogni anno la biodiversità all'interno di questa classe è in diminuizione.
+
+# Biodiversità - interazioni
+
+## Interazioni degli organismi
+
+Sfruttando il dataset messo a disposizione da Global Biotic Interactions è possibile avere una visualizzazione di quelle che sono le interazioni tra i regni tassonomici precedentemente presentati.
+
+```{r Kingdoms interaction data, message=FALSE, warning=FALSE, include=FALSE}
+valid_kingdoms <- gbif %>%
+  filter(taxonRank == "SPECIES", taxonomicStatus == "ACCEPTED", !str_detect(kingdom, "incertae")) %>%
+  distinct(kingdom) %>%
+  pull()
+
+kingdoms_interaction <- interactions %>%
+  select(sourceTaxonKingdomName, targetTaxonKingdomName, interactionTypeName) %>%
+  filter(sourceTaxonKingdomName != "", targetTaxonKingdomName != "") %>%
+  group_by(sourceTaxonKingdomName, targetTaxonKingdomName, interactionTypeName) %>%
+  count() %>%
+  rename(from = sourceTaxonKingdomName, to = targetTaxonKingdomName, type = interactionTypeName, species = n) %>%
+  mutate(
+    from = ifelse(sum(str_detect(from, valid_kingdoms)) > 0, valid_kingdoms[which(str_detect(from, valid_kingdoms))], from),
+    to = ifelse(sum(str_detect(to, valid_kingdoms)) > 0, valid_kingdoms[which(str_detect(to, valid_kingdoms))], to)
+  ) %>%
+  group_by(from, to, type) %>%
+  summarise(species = sum(species)) %>%
+  semi_join(tibble(kingdom = valid_kingdoms), by = c("from" = "kingdom")) %>%
+  semi_join(tibble(kingdom = valid_kingdoms), by = c("to" = "kingdom"))
+```
+
+Nel dataset sono incluse `` `r format(sum(kingdoms_interaction$species), big.mark = ",")` `` interazioni tra i regni, divise in `` `r length(unique(kingdoms_interaction$type))` `` tipi.
+
+```{r Interaction plot, echo=FALSE, out.height="100%", out.width="100%"}
+interactions_dist <- kingdoms_interaction %>%
+  group_by(type) %>%
+  summarise(count = sum(species)) %>%
+  mutate(p = 100 * count / sum(count))
+
+others <- interactions_dist %>%
+  filter(p < 1)
+
+interactions_dist <- interactions_dist %>%
+  filter(p > 1) %>%
+  add_row(type = "other", count = others %>% pull(count) %>% sum(), p = others %>% pull(p) %>% sum())
+
+y <- NULL
+for(i in 1:length(interactions_dist$p)){
+  if (interactions_dist$p[i] < 4)
+    y <- c(y, interactions_dist$p[i] + 1.7)
+  else
+    y <- c(y, interactions_dist$p[i] - 2.5)
+}
+  
+ggplot(interactions_dist) + 
+  geom_col(aes(x = reorder(type, -count), y = p, fill = type), show.legend = F) +
+  geom_text(
+    y = y,
+    aes(label = format(count, big.mark = ","), x = type)
+  ) +
+  scale_y_continuous(breaks = seq(0, (max(interactions_dist$p) + 2.5), by = 1)) +
+  xlab("Interazione") +
+  ylab("Numero di interazioni (in %)") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  labs(title = "Numero di interazioni per tipo", caption = "Fig. 2") +
+  coord_flip()
+```
+
+Dalla figura Fig. 2 si può notare come la maggior parte delle interazioni siano di tipo simbiontico `hasHost`, tuttavia la relazione inversa `symbiontOf` ha poche occorrenze (questa relazione è contenuta nella categoria `other`), questo indica che sono più le specie che "accettano" un individuo simbiontico piuttosto che le specie che hanno la necessità di essere simbionti.
+
+## Approfondimento sull'interazione `hasHost`
+
+```{r hasHost, echo=FALSE, out.height="100%", out.width="100%"}
+hasHost <- kingdoms_interaction %>%
+  filter(type == "hasHost") %>%
+  pivot_longer(c(1,2), names_to = "direction", values_to = "kingdom") %>%
+  group_by(kingdom, direction) %>%
+  summarise(species = sum(species)) 
+
+fig <- plot_ly()
+fig <- fig %>% add_pie(data = filter(hasHost, direction == "from"), labels = ~kingdom, values = ~species, name = "from", domain = list(x = c(0, 0.4), y = c(0, 1)))
+fig <- fig %>% add_pie(data = filter(hasHost, direction == "to"), labels = ~kingdom, values = ~species, name = "to", domain = list(x = c(0.6, 1), y = c(0, 1)))
+fig <- fig %>% layout(title = "hasHost distribution in Kingdoms", xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE), yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE), annotations = list(x = 1, y = -0.1, text = "Fig. 3", showarrow = F, xref='paper', yref='paper', xanchor='right', yanchor='auto', xshift=0, yshift=0))
+fig
+```
+
+Analizzando il grafico in figura Fig. 3 si può osservare come il regno "più ospitante" relazioni simbiontiche sia il `Plantae`, mentre il regno più ospitato sia il `Fungi`. L'associazione simbiontica tra `Plantae` e `Fungi` si caratterizza in alcune forme note come micorrize [@bonfante2010] (fusione degli apparati radicali) e licheni (associazione fungo-alga).
+
+```{r fig.align='center', fig.cap="Schema dello scambio simbiontico nella micorriza", echo=FALSE, out.width="50%"}
+include_graphics(path = "imgs/mycorrhiza.png")
+```
+
+## Rete dell'interazione `eats`
+
+```{r Generate netowrk plots, include=FALSE}
+palette <- tibble(name = valid_kingdoms, color = brewer.pal(n = length(valid_kingdoms), name = "Set1"))
+
+getPlots <- function(x){
+  df <- kingdoms_interaction %>%
+    filter(type == x)
+  
+  max_species <- max(df$species)
+  min_species <- min(df$species)
+  
+  
+  g <- as_tbl_graph(df) %>%
+    activate(nodes) %>%
+    left_join(palette, by = "name") %>%
+    activate(edges) %>%
+    mutate(width = (species - min_species) / (max_species - min_species) * (10 - 1) + 1) %>%
+    mutate(weight = 11 - width)
+  
+  strength <- strength(g, mode = "all")
+  if(length(strength) > 1 & min(strength) != max(strength))
+    strength <- (strength - min(strength)) / (max(strength) - min(strength)) * (30 - 10) + 10
+  else strength <- rep(30, length(strength))
+  
+  V(g)$size <- strength
+  
+  edge_palette <- g %>% activate(nodes) %>% mutate(from = row_number()) %>% select(-name) %>% data.frame()
+  
+  g <- g %>%
+    activate(edges) %>%
+    left_join(edge_palette, by = "from")
+  
+  png(paste0("imgs/interactions/", x, ".png"), 800, 800)
+  
+  plot(
+    g,
+    layout = layout.circle(g),
+    vertex.label=NA,
+    edge.curved=.1,
+    edge.label = g %>% activate(edges) %>% pull(species),
+    rescale = FALSE,
+    ylim=c(-1,1),
+    xlim=c(-0.95,1.5),
+    asp = 0,
+  )
+  legend(
+    "topleft",
+    legend = g %>% activate(nodes) %>% pull(name),
+    pch=21,
+    col=g %>% activate(nodes) %>% pull(color),
+    pt.bg=g %>% activate(nodes) %>% pull(color),
+    pt.cex=1,
+    cex=.8,
+    bty="n",
+    ncol=1
+  )
+  title(x, cex.main=1)
+  dev.off()
+}
+
+lapply(unique(kingdoms_interaction$type), getPlots)
+```
+
+Di seguito viene riportato il grafo che rappresenta l'interazione `eats` tra i vari regni. Nel grafo i nodi hanno grandezza proporzionale alla centralità di grado totale, mentre gli archi hanno spessore proporzionale al numero di occorrenze della relazione direzionata `eats` tra i due regni collegati dall'arco.
+
+Si può notare come tutti i regni interagiscano sotto questo tipo di relazione e la rete risulta essere debolmente connessa. Questo permette di osservare che ogni specie è legata ad altre specie e la perdiata di una di esse può portare ad un effetto a catena in cui i vari archi iniziano ad indebolirsi (diminuisce il numero di occorrenze).
+
+```{r View networks, echo=FALSE, out.height="100%", out.width="100%", fig.align='center'}
+include_graphics(path = "imgs/interactions/eats.png")
+```
+
+## Interazioni dell'uomo
+
+Seppur incomplete, di segutio vengono presentate le principali interazioni che l'uomo ha con la biodiversità.
+
+```{r Human network, include=FALSE}
+homo_interactions <- interactions %>%
+  filter((sourceTaxonGenusName == "Homo" & targetTaxonKingdomName %in% valid_kingdoms) | (sourceTaxonKingdomName %in% valid_kingdoms & targetTaxonGenusName == "Homo") | (sourceTaxonGenusName == "Homo" & targetTaxonGenusName == "Homo"), interactionTypeName != "pollinates", interactionTypeName != "commensalistOf", interactionTypeName != "coOccursWith", interactionTypeName != "coRoostsWith", interactionTypeName != "guestOf", interactionTypeName != "ecologicallyRelatedTo") %>%
+  mutate(
+    from = ifelse(sourceTaxonGenusName == "Homo", "Homo", sourceTaxonKingdomName),
+    to = ifelse(targetTaxonGenusName == "Homo", "Homo", targetTaxonKingdomName)
+  ) %>%
+  rename(type = interactionTypeName) %>%
+  select(from, to, type) %>%
+  count(from, to, type) %>%
+  rename(weight = n)
+  
+palette <- palette %>% rows_append(tibble(name = "Homo", color = "#000000"))
+
+getHomoPlots <- function(x) {
+  df <- homo_interactions %>%
+    filter(type == x)
+  max_weight <- max(df$weight)
+  min_weight <- min(df$weight)
+  
+  g <- as_tbl_graph(df) %>%
+    activate(nodes) %>%
+    left_join(palette, by = "name") %>%
+    activate(edges) %>%
+    mutate(width = (weight - min_weight) / (max_weight - min_weight) * (6 - 0.5) + 0.5)
+  
+  strength <- strength(g, mode = "all")
+  if(length(strength) > 1 & min(strength) != max(strength))
+    strength <- (strength - min(strength)) / (max(strength) - min(strength)) * (30 - 10) + 10
+  else strength <- rep(30, length(strength))
+  
+  V(g)$size <- strength
+  
+  edge_palette <- g %>% activate(nodes) %>% mutate(from = row_number()) %>% select(-name) %>% data.frame()
+  
+  g <- g %>%
+    activate(edges) %>%
+    left_join(edge_palette, by = "from")
+  
+  png(paste0("imgs/interactions/homo_", x, ".png"), 400, 400)
+  
+  plot(
+    g,
+    layout = layout.lgl(g),
+    vertex.label=NA,
+    edge.curved=.1,
+    edge.label = g %>% activate(edges) %>% pull(weight),
+  )
+  legend(
+    "topleft",
+    legend = g %>% activate(nodes) %>% pull(name),
+    pch=21,
+    col=g %>% activate(nodes) %>% pull(color),
+    pt.bg=g %>% activate(nodes) %>% pull(color),
+    pt.cex=1,
+    cex=.8,
+    bty="n",
+    ncol=1
+  )
+  title(paste0("Homo ", x, " interactions"), cex.main=1)
+  dev.off()
+}
+lapply(unique(homo_interactions$type), getHomoPlots)
+```
+
+```{r View human networks, echo=FALSE, out.height="33%", out.width="33%", fig.align='default'}
+paths <- NULL
+for(i in unique(homo_interactions$type)) {
+  path <- paste0("imgs/interactions/homo_", i, ".png")
+  paths <- c(paths, path)
+}
+include_graphics(path = paths)
+```
+
+Possiamo vedere come il uomo e specie dei vari regni siano legati in modo importante e che l'uomo non può fare a meno di interagire con altre specie, per quanto insignificanti possano sembrare.
+
+# La rete sociale nelle formiche
+
+## Introduzione
+
+```{r echo=FALSE}
+colony <- read.csv("data/ants/behavior.csv") %>% filter(colony == 4)
+colony_interactions <- NULL
+for(i in 1:41) {
+  file <- file(paste0("data/ants/network_col1_day", i, ".txt"), "r")
+  ants <- readLines(file, n = 1)
+  ants <- unlist(str_split(ants, ","))
+  
+  from <- NULL
+  to <- NULL
+  day <- NULL
+  count <- NULL
+  visited <- NULL
+  
+  for(id in ants) {
+    edges <- readLines(file, n = 1)
+    edges <- unlist(str_split(edges, ","))
+    for(j in 1:length(edges)) {
+      if(edges[j] != "0" & !(paste(ants[j],id) %in% visited)){
+        ant <- ants[j]
+        visited <- c(visited, paste(id, ant))
+        from <- c(from, gsub("[^0-9.-]", "", id))
+        to <- c(to, gsub("[^0-9.-]", "", ant))
+        day <- c(day, i)
+        count <- c(count, edges[j])
+      }
+      
+    }
+  }
+  
+  if(is.null(colony_interactions))
+    colony_interactions <- tibble(from = from, to = to, count = count, day = day)
+  else
+    colony_interactions <- colony_interactions %>% rows_append(tibble(from = from, to = to, count = count, day = day))
+  
+  close(file)
+}
+colony_interactions <- colony_interactions %>% filter(to != "599", to != "614", to != "621") %>% mutate(count = as.integer(count))
+```
+
+Molto spesso siamo troppo pervasi da un senso di superiorità davanti alla natura per il quale non siamo in grado di capire la fragilità del mondo che ci circonda e di quanto noi siamo dannosi. In questa sezione verrà analizzata la rete sociale all'interno di una colonia di formiche per dimostrare quanto una cosa che noi possiamo pensare piccola, semplice ed irrilevante sia in realtà estremamente complessa.
+
+## La colonia
+
+La colonia di formiche in esame è una colonia della specie Camponotus fellah, tipica del Medio Oriente e del Nord Africa.
+
+```{r fig.align='center', fig.cap="Alcune formiche operaie", echo=FALSE, out.width="25%"}
+include_graphics(path = "imgs/ants.jpg")
+```
+
+Le colonie di formiche sono divise in caste, in questo dataset ne sono state considerate quattro: regina (`Q`), nutrici (`N`), "pulitori" (`C`) e raccoglitori (`F`).
+
+In particolare, la colonia è composta da `` `r nrow(colony)` `` esemplari divisi, nei primi 11 giorni, nelle seguenti caste:
+
+```{r echo=FALSE}
+colony %>%
+  count(group_period1) %>%
+  rename(group = group_period1, count = n) %>%
+  arrange(count) %>%
+  kable() %>%
+  kable_minimal(c("striped", "hover", "condensed", "responsive"), font_size = 17) %>%
+  scroll_box(width = "100%")
+```
+
+La colonia è stata monitorata come all'articolo nei riferimenti [@mersch2013].
+
+## Centralità di grado
+
+```{r echo=FALSE}
+cent <- NULL
+for(x in 1:11){
+  g <- as_tbl_graph(colony_interactions %>% filter(day == x), directed = FALSE)
+  v <- V(g)$name
+  weights <- E(g)$count
+  weights <- 2 - (weights - min(weights)) / (max(weights) - min(weights))
+  wbtw <- betweenness(g, directed = FALSE, weights = weights)
+  btw <- betweenness(g, directed = FALSE)
+  deg <- degree(g)
+  eig <- eigen_centrality(g)$vector
+  if(is.null(cent))
+    cent <- tibble(node = v, degree = deg, betweenness = btw, weighted_betweenness = wbtw, eigen = eig, day = rep(x, length(deg)))
+  else
+    cent <- cent %>% rows_append(tibble(node = v, degree = deg, betweenness = btw, weighted_betweenness = wbtw, eigen = eig, day = rep(x, length(deg))))
+}
+cent <- cent %>% left_join(colony %>% select(tag_id, group_period1) %>% mutate(tag_id = as.character(tag_id)), by = c("node" = "tag_id")) %>% rename(group = group_period1)
+```
+
+Com'è visibile dal seguente grafico che compara la distribuzione dei gradi dei nodi sui primi 11 giorni di osservazione, la rete sociale delle formiche non ha un andamento power-law. Questo è compatibile con la biologia della colonia di formiche: se la distribuzione dei gradi fosse power-law allora ci sarebbero uno o più hub nella rete e l'eventuale rimozione di uno di essi comporterebbe un grave pericolo per la colonia.
+
+```{r echo=FALSE, out.width="100%"}
+p <- cent %>%
+  ggplot(aes(x = degree)) +
+  geom_bar() +
+  facet_wrap(vars(day)) +
+  xlab("Grado") +
+  ylab("Numero di nodi") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  labs(title = "Distribuzione dei gradi nei giorni")
+ggplotly(p)
+```
+
+Osservando il grado della regina possiamo notare come inizialmente questo sia alto e poi tenda a scendere con il passare dei giorni. Ciò può essere collegato al fatto che più la colonia è giovane e maggiore è la dipendenza dalla regina.
+
+```{r echo=FALSE, out.width="100%"}
+ p <- cent %>% filter(node == 219) %>%
+  ggplot(aes(x = day, y = degree)) +
+  geom_col() +
+  xlab("Giorni") +
+  ylab("Grado") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  labs(title = "Distribuzione del grado della regina")
+ggplotly(p)
+```
+
+## Betweenness centrality
+
+La betweenness centrality da un'indicazione su quelli che potrebbero essere nodi particolarmente importanti negli scambi di informazioni, cibo e malattie all'interno della colonia.
+
+```{r echo=FALSE, out.width="100%"}
+p <- cent %>% filter(group != "Q") %>%
+  ggplot(aes(x = as.factor(day), y = weighted_betweenness)) +
+  geom_boxplot() +
+  xlab("Giorni") +
+  ylab("") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  labs(title = "Distribuzione della betweenness") +
+  facet_wrap(vars(group))
+ggplotly(p)
+```
+
+Il boxplot si basa sulla betweenness pesata. Il peso è stato calcolato come $2 - \text{minMaxNorm}(\text{occorrenze})$ , dove le occorrenze sono il numero di interazioni tra due nodi nello stesso giorno.
+
+Possiamo osservere come formiche raccoglitrici abbiano betweenness mediamente più alta rispetto agli altri due gruppi e che anche gli outliers siano nettamente più alti. Questo indica che le formiche raccoglitrici sono centrali all'interno della trasmissione sociale nella colonia.
+
+## Caste e cluster
+
+Di seguito vengono presentate le differenze di struttura durante i giorni 1, 3, 5, 9 e 11 di osservazione della colonia. Per ogni giorno vengono presentati due grafi:
+
+-   grafo con disposizione dei nodi derivata dall'algoritmo di Fruchterman - Reingold;
+
+-   grafo con la stessa disposizione del precedente ma con nodi divisi in cluster prodotti con l'algoritmo Infomap.
+
+```{r echo=FALSE, out.height="50%", out.width="50%"}
+compareNetwork <- function(x){
+  g <- as_tbl_graph(colony_interactions %>% filter(day == x, count > 5), directed = FALSE)
+btw <- edge.betweenness(g, directed = FALSE)
+btw <- (btw - min(btw)) / (max(btw) - min(btw))
+g <- g %>% activate(edges) %>% mutate(btw = btw)
+g <- g %>% activate(nodes) %>% left_join(colony %>% select(tag_id, group_period1, body_size) %>% mutate(tag_id = as.character(tag_id)), by = c("name" = "tag_id")) %>% rename(group = group_period1)
+
+V(g)$size <- (V(g)$body_size - min(V(g)$body_size)) / (max(V(g)$body_size) - min(V(g)$body_size)) * (15-1) + 1 
+
+e <- g %>% activate(edges) %>% data.frame()
+
+palette <- tibble(group = unique(g %>% activate(nodes) %>% pull(group)), color = brewer.pal(n = length(unique(g %>% activate(nodes) %>% pull(group))), name = "Set1"))
+
+g <- g %>% activate(nodes) %>% left_join(palette, by = "group")
+
+edge_colors <- NULL
+for(i in 1:nrow(e)) {
+  edge_colors <- c(edge_colors, adjustcolor("Black", alpha.f = btw[i]))
+}
+E(g)$color <- edge_colors
+lay <- layout.fruchterman.reingold(g, niter = 1000)
+cluster <- cluster_infomap(g)
+
+plot(
+  g,
+  layout = lay,
+  vertex.label=NA,
+  vertex.color=V(g)$color
+)
+legend(
+  "topleft",
+  legend = unique(g %>% activate(nodes) %>% pull(group)),
+  pch=21,
+  col=g %>% activate(nodes) %>% pull(color),
+  pt.bg= unique(g %>% activate(nodes) %>% pull(color)),
+  pt.cex=1,
+  cex=.8,
+  bty="n",
+  ncol=1
+)
+title(paste0("Day ", x), cex.main=1)
+
+plot(
+  cluster,
+  g,
+  layout = lay,
+  vertex.label=NA,
+  vertex.color=V(g)$color
+)
+legend(
+  "topleft",
+  legend = unique(g %>% activate(nodes) %>% pull(group)),
+  pch=21,
+  col=g %>% activate(nodes) %>% pull(color),
+  pt.bg= unique(g %>% activate(nodes) %>% pull(color)),
+  pt.cex=1,
+  cex=.8,
+  bty="n",
+  ncol=1
+)
+title(paste0("Day ", x, " (cluster)"), cex.main=1)
+}
+
+compareNetwork(1)
+compareNetwork(3)
+compareNetwork(5)
+compareNetwork(7)
+compareNetwork(9)
+compareNetwork(11)
+```
+
+-   L'algoritmo di Fruchterman - Reingold evidenzia la conformazione suddivisa in caste che ci si potrebbe attendere da una colonia di formiche;
+
+-   La suddivisione in cluster della rete evidenzia un cluster di principalmente formiche "foragers" e un cluster di principalmente formiche "cleaners", mentre i cluster di formiche "nurses" variano con il tempo, in particolare aumentano con il progredire dei giorni.
+
+# Conclusioni
+
+## Conclusioni
+
+La biosfera è un entità complessa e fragile, nelle cose più piccole troviamo migliaia di anni di perfezionamento ed evoluzione.
+
+Tutte le specie sono legate le une alle altre e l'uomo deve fare lo sforzo di limitare i propri danni e imparare a capire ed interiorizzare il suo ruolo all'interno della biodiversità.
+
+Una piccola parte del tutto e quindi niente se da solo.
+
+# Riferimenti
+
+## 
