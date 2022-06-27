@@ -8,10 +8,10 @@ output:
     css: style.css
     df_print: kable
     widescreen: true
-bibliography: biblio.bib
+bibliography: references.bib
 ---
 
-```{r Libraries, message=FALSE, warning=FALSE, include=FALSE, suppressWarnings = TRUE, suppressPackageStartupMessages = TRUE}
+```{r Libraries, include=FALSE}
 library(knitr)
 library(kableExtra)
 library(tidyverse)
@@ -24,6 +24,7 @@ library(gganimate)
 library(graphlayouts)
 library(plotly)
 library(RColorBrewer)
+library("vembedr")
 options(dplyr.summarise.inform = FALSE)
 ```
 
@@ -31,9 +32,9 @@ options(dplyr.summarise.inform = FALSE)
 
 ## Dati sulla biodiversità
 
-I dati sulla biodiversità mondiale sono stati ottenuti dalla rete GBIF attraverso il download dall'apposito portale [@dataset].
+I dati sulla biodiversità mondiale sono stati ottenuti dalla rete GBIF attraverso il download dall'apposito portale [@gbif.org2022].
 
-Il Global Biodiversity Information Facility è una rete internazionale e un'infrastruttura dati fondata dai governi mondiali che si pone l'obbiettivo di fornire libero accesso ai dati riguardanti tutti i tipi di vita sulla Terra [@gbif.org2022].
+Il Global Biodiversity Information Facility è una rete internazionale e un'infrastruttura dati fondata dai governi mondiali che si pone l'obbiettivo di fornire libero accesso ai dati riguardanti tutti i tipi di vita sulla Terra [@gbif.org2022a].
 
 ### Lettura del file
 
@@ -41,7 +42,7 @@ Il file contenete il dataset è un file .csv dove il separatore è il carattere 
 
 La lettura del file è stata operata utilizzando l'apposita funzione `read_csv()`, specificando gli oportuni parametri.
 
-```{r Read GBIF, include=FALSE}
+```{r Read GBIF, include=FALSE, cache=TRUE}
 if (!exists("gbif"))
   gbif <- read.csv("data/gbif.csv", sep = "\t")
 ```
@@ -94,7 +95,7 @@ Aprendo poi la porta 80 e configurando le credenziali d'accesso è stata utilizz
 
 ### Dataset derivato
 
-```{r Read Interactions, include=FALSE}
+```{r Read Interactions, include=FALSE, cache=TRUE}
 if (!exists("interactions")){
   interactions <- read.csv("data/interactions_red.csv")
   
@@ -173,7 +174,7 @@ interactions %>%
 
 ## Dataset sulle formiche
 
-I dati sulla colonia di formiche sono state ottenute da una ricerca [@mersch2013a].
+I dati sulla colonia di formiche sono state ottenute da una ricerca [@mersch2013].
 
 ### Lettura dei file
 
@@ -218,7 +219,7 @@ fwrite(interactions_reduced, "interactions_red.csv")
 
 ## Cos'é la biodiversità?
 
-Diversità biologica [@conventi1993]
+Diversità biologica [@conventi1993
 
 :   Variabilità degli organismi viventi di ogni origine, compresi inter alia gli ecosistemi terrestri, marini ed altri ecosistemi acquatici, ed i complessi ecologici di cui fanno parte; ciò include la diversità nell'ambito delle specie, e tra le specie degli ecosistemi.
 
@@ -229,6 +230,8 @@ La biodiversità è importante per tutti i processi che supportano la vita sulla
 La perdita della diversità biologica costituisce un pericolo per la vita di tutti gli organismi sul nostro pianeta, noi inclusi. Per questo motivio è importante che ognuno di noi sia conoscio di quanto ogni creatura che ci circonda svolga un ruolo fondamentale per la nostra vita [@theroyalsociety2022].
 
 ## Regni tassonomici
+
+La tassonomia moderna identifica, al livello più alto della classificazione, 8 regni di entità biologiche: Animalia, Archaea, Bacteria, Chromista, Fungi, Plantae, Protozoa e Virus.
 
 ```{r Kingdoms dataframe, echo=FALSE}
 kingdoms <- gbif %>%
@@ -242,8 +245,6 @@ kingdoms <- gbif %>%
   ) %>%
   mutate(p = 100 * n / sum(n))
 ```
-
-La tassonomia moderna identifica, al livello più alto della classificazione, 8 regni di entità biologiche: Animalia, Archaea, Bacteria, Chromista, Fungi, Plantae, Protozoa e Virus.
 
 Per una questione di sotto-campionamento rispetto alle osservazioni degli scienziati [@louca2019; @microbio2011] vengono esculsi dall'analisi i regni Archaea, Bacteria e Virus.
 
@@ -286,6 +287,13 @@ plantae <- gbif %>%
   filter(taxonRank == "SPECIES", taxonomicStatus == "ACCEPTED", kingdom == "Plantae") %>%
   select(phylum, class, order, family, genus) %>%
   filter(if_all(everything(), ~. != ""))
+
+plantae %>%
+  head(10) %>%
+  kable() %>%
+  kable_minimal(c("striped", "hover", "condensed", "responsive"), font_size = 17) %>%
+  scroll_box(width = "100%")
+  
 ```
 
 ```{r Plantae plot, echo=FALSE, out.height = "100%", out.width = "100%", warning=FALSE}
@@ -346,7 +354,12 @@ animalia <- gbif %>%
     order = ifelse(order == class | order == phylum, paste0(order, " (order)"), order),
     family = ifelse(family == order | family == class | family == phylum, paste0(family, " (family)"), family),
     genus = ifelse(genus %in% ambiguous | genus == family | genus == order | genus == class | genus == phylum, paste0(genus, " (genus)"), genus),
-  )
+  ) 
+animalia %>%
+  head(10) %>%
+  kable() %>%
+  kable_minimal(c("striped", "hover", "condensed", "responsive"), font_size = 17) %>%
+  scroll_box(width = "100%")
 ```
 
 ```{r Animalia plot, echo=FALSE, out.height = "100%", out.width = "100%"}
@@ -620,7 +633,7 @@ getHomoPlots <- function(x) {
 lapply(unique(homo_interactions$type), getHomoPlots)
 ```
 
-```{r View human networks, echo=FALSE, out.height="33%", out.width="33%", fig.align='default'}
+```{r View human networks, echo=FALSE, out.height="50%", out.width="50%", fig.align='default'}
 paths <- NULL
 for(i in unique(homo_interactions$type)) {
   path <- paste0("imgs/interactions/homo_", i, ".png")
@@ -636,6 +649,8 @@ Possiamo vedere come il uomo e specie dei vari regni siano legati in modo import
 ## Introduzione
 
 ```{r echo=FALSE}
+rm(gbif)
+rm(interactions)
 colony <- read.csv("data/ants/behavior.csv") %>% filter(colony == 4)
 colony_interactions <- NULL
 for(i in 1:41) {
@@ -686,6 +701,22 @@ include_graphics(path = "imgs/ants.jpg")
 ```
 
 Le colonie di formiche sono divise in caste, in questo dataset ne sono state considerate quattro: regina (`Q`), nutrici (`N`), "pulitori" (`C`) e raccoglitori (`F`).
+
+```{r echo=FALSE}
+colony %>%
+  head(10) %>%
+  kable() %>%
+  kable_minimal(c("striped", "hover", "condensed", "responsive"), font_size = 17) %>%
+  scroll_box(width = "100%")
+```
+
+```{r echo=FALSE}
+colony_interactions %>%
+  head(10) %>%
+  kable() %>%
+  kable_minimal(c("striped", "hover", "condensed", "responsive"), font_size = 17) %>%
+  scroll_box(width = "100%")
+```
 
 In particolare, la colonia è composta da `` `r nrow(colony)` `` esemplari divisi, nei primi 11 giorni, nelle seguenti caste:
 
@@ -760,7 +791,7 @@ p <- cent %>% filter(group != "Q") %>%
   ggplot(aes(x = as.factor(day), y = weighted_betweenness)) +
   geom_boxplot() +
   xlab("Giorni") +
-  ylab("") +
+  ylab("Grado") +
   theme_minimal() +
   theme(legend.position = "none") + 
   labs(title = "Distribuzione della betweenness") +
@@ -768,9 +799,80 @@ p <- cent %>% filter(group != "Q") %>%
 ggplotly(p)
 ```
 
-Il boxplot si basa sulla betweenness pesata. Il peso è stato calcolato come $2 - \text{minMaxNorm}(\text{occorrenze})$ , dove le occorrenze sono il numero di interazioni tra due nodi nello stesso giorno.
+Il boxplot si basa sulla betweenness pesata. Il peso è stato calcolato come , dove le occorrenze sono il numero di interazioni tra due nodi nello stesso giorno.
 
-Possiamo osservere come formiche raccoglitrici abbiano betweenness mediamente più alta rispetto agli altri due gruppi e che anche gli outliers siano nettamente più alti. Questo indica che le formiche raccoglitrici sono centrali all'interno della trasmissione sociale nella colonia.
+Possiamo osservare come formiche raccoglitrici abbiano betweenness mediamente più alta rispetto agli altri due gruppi e che anche gli outliers siano nettamente più alti. Questo indica che le formiche raccoglitrici sono centrali all'interno della trasmissione sociale nella colonia.
+
+```{r echo=FALSE, out.width="100%"}
+p <- cent %>% filter(group == "F") %>%
+  ggplot(aes(x = day, y = weighted_betweenness, group = node, color = node)) +
+  geom_line() +
+  xlab("Giorni") +
+  ylab("Grado") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  labs(title = "Distribuzione della betweenness") +
+  facet_wrap(vars(group))
+ggplotly(p)
+```
+
+Dalla serie temporale dei gradi raggruppati per nodo possiamo notare che c'è tendenzialmente un nodo che ha weighted betweenness maggiore degli altri, ed è il nodo `100`.
+
+Di seguito viene presentato un video che illustra l'evoluzione della betweenness (grandezza del nodo) con il passare dei giorni.
+
+```{r echo=FALSE, out.width="100%"}
+embed_url("https://youtu.be/Kv9fiUhOnx4")
+```
+
+```{r eval=FALSE, include=FALSE}
+colony_cent <- left_join(colony %>% mutate(tag_id = as.character(tag_id)), cent, by = c("tag_id" = "node"))
+
+lay <- NULL
+for (i in 1:11) {
+  g <- as_tbl_graph(colony_interactions %>% filter(day == i), directed = FALSE)
+  tmp <- layout.fruchterman.reingold(
+    g,
+    minx = rep(-2, length(V(g))),
+    maxx = rep(2, length(V(g))),
+    miny = rep(-2, length(V(g))),
+    maxy = rep(2, length(V(g)))
+  )
+  if(is.null(lay))
+    lay <- tibble(x = tmp[,1], y = tmp[,2], day = rep(i, 110))
+  else
+    lay <- lay %>% rows_append(tibble(x = tmp[,1], y = tmp[,2], day = rep(i, 110)))
+}
+lay <- lay %>% add_column(node = rep(V(g)$name, 11), id = rep(c(1:110), 11))
+min(lay %>% filter(day == 1) %>% pull(y))
+
+colony_cent <- colony_cent %>% left_join(lay, by = c("tag_id" = "node", "day" = "day"))
+edges <- colony_interactions %>% filter(day <= 11) %>%
+  left_join(lay, by = c("to" = "node", "day")) %>%
+  rename(xend = x, yend = y) %>%
+  left_join(lay, by = c("from" = "node", "day")) %>%
+  select(-id.x, -id.y)
+
+plot = 
+  ggplot() +
+  geom_segment(
+    data = edges,
+    aes(x = x, xend = xend, y = y, yend = yend, alpha = count),
+    inherit.aes=FALSE
+  ) +
+  geom_point(
+    data = colony_cent,
+    aes(x, y, color = group, size = weighted_betweenness),
+    inherit.aes=FALSE
+  ) +
+  scale_size(range = c(5, 35)) +
+  ease_aes('linear') +
+  transition_states(day, state_length = 0.5, wrap = FALSE) +
+  labs(title = "Day {closest_state}") +
+  theme_void() +
+  theme(legend.position = "none")
+q <- 4
+animate(plot, rendere = av_renderer("betweenness.mkv"), duration = 55, width = 480*q, height = 270*q, fps = 60)
+```
 
 ## Caste e cluster
 
@@ -782,7 +884,7 @@ Di seguito vengono presentate le differenze di struttura durante i giorni 1, 3, 
 
 ```{r echo=FALSE, out.height="50%", out.width="50%"}
 compareNetwork <- function(x){
-  g <- as_tbl_graph(colony_interactions %>% filter(day == x, count > 5), directed = FALSE)
+  g <- as_tbl_graph(colony_interactions %>% filter(day == x, count > 10), directed = FALSE)
 btw <- edge.betweenness(g, directed = FALSE)
 btw <- (btw - min(btw)) / (max(btw) - min(btw))
 g <- g %>% activate(edges) %>% mutate(btw = btw)
@@ -807,8 +909,9 @@ cluster <- cluster_infomap(g)
 plot(
   g,
   layout = lay,
-  vertex.label=NA,
-  vertex.color=V(g)$color
+  vertex.label.cex = 0.5,
+  vertex.color=V(g)$color,
+  asp = 0
 )
 legend(
   "topleft",
@@ -828,7 +931,8 @@ plot(
   g,
   layout = lay,
   vertex.label=NA,
-  vertex.color=V(g)$color
+  vertex.color=V(g)$color,
+  asp = 0
 )
 legend(
   "topleft",
